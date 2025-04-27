@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DASH Audio Server</title>
+    <link
+      href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css"
+      rel="stylesheet"
+    />
+    <style>
+      body {
+        padding-top: 20px;
+        background-color: #f5f5f5;
+      }
+      .player-container {
+        background-color: #fff;
+        border-radius: 8px;
+        padding: 20px;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        margin-bottom: 20px;
+      }
+      audio {
+        width: 100%;
+      }
+      .track-list {
+        max-height: 500px;
+        overflow-y: auto;
+      }
+      .track-item {
+        cursor: pointer;
+        transition: background-color 0.2s;
+      }
+      .track-item:hover {
+        background-color: #f0f0f0;
+      }
+      .track-item.active {
+        background-color: #e9ecef;
+      }
+      .dash-badge {
+        font-size: 0.7em;
+      }
+      .loading {
+        display: inline-block;
+        width: 20px;
+        height: 20px;
+        border: 2px solid rgba(0, 0, 0, 0.1);
+        border-radius: 50%;
+        border-top-color: #007bff;
+        animation: spin 1s linear infinite;
+      }
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <header class="pb-3 mb-4 border-bottom">
+        <h1 class="display-5 fw-bold">DASH Audio Server</h1>
+        <p class="lead">Adaptive audio streaming with DASH technology</p>
+      </header>
+
+      <div class="row">
+        <!-- Player and Controls -->
+        <div class="col-md-5">
+          <div class="player-container mb-4">
+            <h2 class="h5 mb-3">Player</h2>
+            <div id="player">
+              <div class="text-center py-5 text-muted">
+                <p>Select a track to start playback</p>
+              </div>
+            </div>
+            <div id="track-info" class="mt-3 d-none">
+              <h3 id="current-title" class="h5 mb-1"></h3>
+              <p id="current-artist" class="text-muted"></p>
+            </div>
+          </div>
+
+          <div class="d-grid gap-2">
+            <button id="rescan-btn" class="btn btn-primary">
+              Rescan library
+            </button>
+          </div>
+        </div>
+
+        <!-- Track List -->
+        <div class="col-md-7">
+          <div class="card">
+            <div
+              class="card-header d-flex justify-content-between align-items-center"
+            >
+              <h2 class="h5 mb-0">Audio Library</h2>
+              <div class="input-group" style="max-width: 300px">
+                <input
+                  type="text"
+                  id="search-input"
+                  class="form-control form-control-sm"
+                  placeholder="Search..."
+                />
+              </div>
+            </div>
+            <ul id="track-list" class="list-group list-group-flush track-list">
+              <li class="list-group-item text-center py-5">
+                <div class="spinner-border text-primary" role="status">
+                  <span class="visually-hidden">Loading...</span>
+                </div>
+                <p class="mt-3">Loading audio library...</p>
+              </li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Dashjs -->
+    <script src="https://cdn.dashjs.org/latest/dash.all.min.js"></script>
+    <script>
+      document.addEventListener("DOMContentLoaded", function () {
+        const API_BASE_URL = "/api";
+        let player = null;
+        let tracks = [];
+        let currentTrack = null;
+
+        // Fetch tracks from API
+        async function fetchTracks() {
+          try {
+            const response = await fetch(`${API_BASE_URL}/tracks`);
+            if (!response.ok) throw new Error("Failed to fetch tracks");
+            tracks = await response.json();
+            renderTrackList(tracks);
+          } catch (error) {
+            console.error("Error fetching tracks:", error);
+            document.getElementById("track-list").innerHTML = `
+                        <li class="list-group-item text-center py-5 text-danger">
+                            <p>Error loading audio library.</p>
+                            <button class="btn btn-sm btn-outline-primary mt-2" onclick="fetchTracks()">Try again</button>
+                        </li>
+                    `;
+          }
+        }
+
+        // Render track list
+        function renderTrackList(tracksToRender) {
+          const trackListEl = document.getElementById("track-list");
+
+          if (tracksToRender.length === 0) {
+            trackListEl.innerHTML = `
+                        <li class="list-group-item text-center py-5 text-muted">
+                            <p>No audio tracks found.</p>
+                            <button id="rescan-list-btn" class="btn btn-sm btn-outline-primary mt-2">Rescan library</button>
+                        </li>
+                    `;
+            document
+              .getElementById("rescan-list-btn")
+              .addEventListener("click", rescanLibrary);
+            return;
+          }
+
+          trackListEl.innerHTML = tracksToRender
+            .map(
+              (track) => `
+                    <li class="list-group-item track-item d-flex justify-content-between align-items-center" data-id="${
+                      track.id
+                    }">
+                        <div>
+                            <h5 class="mb-1">${escapeHtml(track.title)}</h5>
+                            <p class="mb-0 text-muted">${escapeHtml(
+                              track.artist
+                            )} · ${escapeHtml(track.album)}</p>
+                        </div>
+                        <div>
+                            ${
+                              track.dash_url
+                                ? `<span class="badge bg-success dash-badge">DASH</span>`
+                                : `<button class="btn btn-sm btn-outline-primary prepare-dash-btn" data-id="${track.id}">Prepare DASH</button>`
+                            }
+                        </div>
+                    </li>
+                `
+            )
+            .join("");
+
+          // Add event listeners
+          document.querySelectorAll(".track-item").forEach((item) => {
+            item.addEventListener("click", function (e) {
+              if (e.target.classList.contains("prepare-dash-btn")) return;
+              const trackId = this.dataset.id;
+              const track = tracks.find((t) => t.id == trackId);
+              selectTrack(track);
+            });
+          });
+
+          document.querySelectorAll(".prepare-dash-btn").forEach((btn) => {
+            btn.addEventListener("click", function (e) {
+              e.stopPropagation();
+              const trackId = this.dataset.id;
+              prepareDash(trackId);
+            });
+          });
+        }
+
+        // Prepare DASH for a track
+        async function prepareDash(trackId) {
+          const btn = document.querySelector(
+            `.prepare-dash-btn[data-id="${trackId}"]`
+          );
+          btn.disabled = true;
+          btn.innerHTML = '<span class="loading"></span> Processing...';
+
+          try {
+            const response = await fetch(`${API_BASE_URL}/prepare-dash`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                track: { track_id: trackId },
+              }),
+            });
+
+            if (!response.ok) throw new Error("Failed to prepare DASH");
+
+            // Start polling for status
+            startStatusPolling(trackId);
+          } catch (error) {
+            console.error("Error preparing DASH:", error);
+            btn.disabled = false;
+            btn.innerHTML = "Error! Try again";
+            btn.classList.remove("btn-outline-primary");
+            btn.classList.add("btn-outline-danger");
+          }
+        }
+
+        // Poll for conversion status
+        function startStatusPolling(trackId) {
+          const statusInterval = setInterval(async () => {
+            try {
+              const response = await fetch(`${API_BASE_URL}/status/${trackId}`);
+              if (!response.ok) throw new Error("Failed to get status");
+
+              const status = await response.json();
+              const btn = document.querySelector(
+                `.prepare-dash-btn[data-id="${trackId}"]`
+              );
+
+              if (status.status === "ready") {
+                clearInterval(statusInterval);
+                // Update track in our local array
+                const trackIndex = tracks.findIndex((t) => t.id == trackId);
+                if (trackIndex !== -1) {
+                  tracks[trackIndex].dash_url = status.url;
+                  // Refresh the list
+                  renderTrackList(tracks);
+                }
+              } else if (status.status === "error") {
+                clearInterval(statusInterval);
+                btn.disabled = false;
+                btn.innerHTML = "Error! Try again";
+                btn.classList.remove("btn-outline-primary");
+                btn.classList.add("btn-outline-danger");
+              }
+            } catch (error) {
+              console.error("Error polling status:", error);
+            }
+          }, 2000);
+        }
+
+        // Select and play a track
+        function selectTrack(track) {
+          currentTrack = track;
+
+          // Update active state in list
+          document.querySelectorAll(".track-item").forEach((item) => {
+            item.classList.remove("active");
+            if (item.dataset.id == track.id) {
+              item.classList.add("active");
+            }
+          });
+
+          // Update track info
+          document.getElementById("track-info").classList.remove("d-none");
+          document.getElementById("current-title").textContent = track.title;
+          document.getElementById(
+            "current-artist"
+          ).textContent = `${track.artist} · ${track.album}`;
+
+          // Initialize or update player
+          const playerEl = document.getElementById("player");
+
+          if (track.dash_url) {
+            // DASH streaming available
+            playerEl.innerHTML = '<video id="dash-video" controls></video>';
+
+            if (player) {
+              player.reset();
+            }
+
+            player = dashjs.MediaPlayer().create();
+            player.initialize(
+              document.querySelector("#dash-video"),
+              track.dash_url,
+              true
+            );
+            player.setAutoPlay(true);
+          } else {
+            // No DASH, show prepare button
+            playerEl.innerHTML = `
+                        <div class="text-center py-5">
+                            <p>This track is not prepared for DASH streaming.</p>
+                            <button class="btn btn-primary prepare-player-dash-btn" data-id="${track.id}">
+                                Convert for streaming
+                            </button>
+                        </div>
+                    `;
+
+            document
+              .querySelector(".prepare-player-dash-btn")
+              .addEventListener("click", function () {
+                const trackId = this.dataset.id;
+                prepareDash(trackId);
+                this.disabled = true;
+                this.innerHTML = '<span class="loading"></span> Preparing...';
+              });
+          }
+        }
+
+        // Rescan library
+        async function rescanLibrary() {
+          const rescanBtn = document.getElementById("rescan-btn");
+          rescanBtn.disabled = true;
+          rescanBtn.innerHTML = '<span class="loading"></span> Rescanning...';
+
+          try {
+            const response = await fetch(`${API_BASE_URL}/tracks/rescan`, {
+              method: "POST",
+            });
+
+            if (!response.ok) throw new Error("Failed to rescan library");
+
+            // Show loading in track list
+            document.getElementById("track-list").innerHTML = `
+                        <li class="list-group-item text-center py-5">
+                            <div class="spinner-border text-primary" role="status">
+                                <span class="visually-hidden">Rescanning...</span>
+                            </div>
+                            <p class="mt-3">Rescanning audio library...</p>
+                        </li>
+                    `;
+
+            // Wait a bit and then fetch tracks again
+            setTimeout(fetchTracks, 2000);
+          } catch (error) {
+            console.error("Error rescanning library:", error);
+          } finally {
+            setTimeout(() => {
+              rescanBtn.disabled = false;
+              rescanBtn.innerHTML = "Rescan library";
+            }, 2000);
+          }
+        }
+
+        // Search tracks
+        document
+          .getElementById("search-input")
+          .addEventListener("input", function () {
+            const searchTerm = this.value.toLowerCase();
+            if (searchTerm === "") {
+              renderTrackList(tracks);
+              return;
+            }
+
+            const filteredTracks = tracks.filter(
+              (track) =>
+                track.title.toLowerCase().includes(searchTerm) ||
+                track.artist.toLowerCase().includes(searchTerm) ||
+                track.album.toLowerCase().includes(searchTerm)
+            );
+
+            renderTrackList(filteredTracks);
+          });
+
+        // Add rescan button listener
+        document
+          .getElementById("rescan-btn")
+          .addEventListener("click", rescanLibrary);
+
+        // Helper function to escape HTML
+        function escapeHtml(unsafe) {
+          return unsafe
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#039;");
+        }
+
+        // Initialize - fetch tracks
+        fetchTracks();
+      });
+    </script>
+  </body>
+</html>

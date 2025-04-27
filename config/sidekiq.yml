@@ -1,0 +1,11 @@
+---
+:concurrency: <%= ENV.fetch("SIDEKIQ_CONCURRENCY") { Concurrent.processor_count } %>
+:queues:
+ - [dash_conversion, 5]
+ - [default, 1]
+
+:scheduler:
+ :schedule:
+   check_pending_conversions:
+     cron: "*/10 * * * *" # Runs every 10 minutes
+     class: PendingConversionsCheckJob
